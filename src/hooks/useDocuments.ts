@@ -80,12 +80,61 @@ export function useDocuments() {
       .select()
       .single()
 
-    if (error) console.error(error)
-    else setDocuments((prev) => [data, ...prev])
+    if (error) {
+      console.error(error)
+      return
+    }
+
+        setDocuments((prev) => [data, ...prev])
+
+    // Send to RAG backend for indexing
+    // Only index file types the backend supports
+    const indexableTypes = ['pdf', 'docx', 'doc', 'txt']
+    if (fileType && indexableTypes.includes(fileType)) {
+      try {
+        const formData = new FormData()
+        formData.append('file', file)
+        formData.append('document_id', data.id)
+        formData.append('workspace_id', userData.workspace_id)
+        if (metadata.client_id) formData.append('client_id', metadata.client_id)
+        if (metadata.project_id) formData.append('project_id', metadata.project_id)
+
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
+        const res = await fetch(`${apiUrl}/upload`, {
+          method: 'POST',
+          body: formData,
+        })
+
+        if (res.ok) {
+          // Mark as indexed in local state
+          setDocuments((prev) =>
+            prev.map((d) => (d.id === data.id ? { ...d, is_indexed: true } : d))
+          )
+        } else {
+          console.error('RAG indexing failed:', await res.text())
+        }
+      } catch (err) {
+        console.error('RAG backend unreachable:', err)
+      }
+    }
+
   }
 
   async function deleteDocument(id: string, storagePath: string) {
     const supabase = createClient()
+
+    // Remove chunks from RAG backend
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
+      await fetch(`${apiUrl}/document`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ document_id: id }),
+      })
+    } catch (err) {
+      console.error('Failed to delete RAG chunks:', err)
+    }
+
     await supabase.storage.from('documents').remove([storagePath])
     await supabase.from('documents').delete().eq('id', id)
     setDocuments((prev) => prev.filter((d) => d.id !== id))
